@@ -12,12 +12,14 @@
 # http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
 import gzip
 import os
+import tempfile
 import time
 import itertools
 
 from grinder.BaseFetch import BaseFetch
 from grinder.GrinderCallback import ProgressReport
 from grinder.RepoFetch import YumRepoGrinder
+import grinder.GrinderMetadataDb as metadata_db
 from pulp.server.db.model.criteria import UnitAssociationCriteria
 from pulp_rpm.yum_plugin import util, metadata
 from yum_importer import distribution, drpm
@@ -378,6 +380,35 @@ def preserve_custom_metadata_on_scratchpad(repo, sync_conduit, config):
         existing_scratch_pad["repodata"].update({ftype : data})
     sync_conduit.set_repo_scratchpad(existing_scratch_pad)
 
+def compute_pkg_xml_snippets(sack, pkg_unit):
+    """
+    Compute the xml metadata for package and preserve it in the unit
+    @param pkg_unit:
+    @return:
+    """
+#    _LOG.info("Computing pkg xml snippets %s" % pkg_unit.storage_path)
+    repodata = metadata.get_package_xml(pkg_unit.storage_path, checksum=pkg_unit.unit_key['checksum'],
+        checksum_type=pkg_unit.unit_key['checksumtype'])
+#    repodata = metadata.get_repo_package(sack, pkg_unit.unit_key["name"], pkg_unit.unit_key["version"],
+#        pkg_unit.unit_key["release"], pkg_unit.unit_key["epoch"], pkg_unit.unit_key["arch"])
+    pkg_unit.metadata["repodata"] = repodata
+    return pkg_unit
+
+def retrieve_pkg_metadata(db_connection, pkg_unit):
+#    query = {"name" : pkg_unit.unit_key['name'],
+#             "epoch": pkg_unit.unit_key['epoch'],
+#             "version" : pkg_unit.unit_key['version'],
+#             "release" : pkg_unit.unit_key['release'],
+#             "arch" : pkg_unit.unit_key['arch'],
+#             "checksum" : pkg_unit.unit_key[]}
+    result = metadata_db.query_entry(db_connection, pkg_unit.unit_key)
+    if result:
+        _LOG.info("RESULTS ACQUIRED")
+        pkg_unit.metadata["repodata"] = {"primary" : str(result[0]),
+                                         "filelists" : str(result[1]),
+                                         "other" : str(result[2])}
+    return pkg_unit
+
 class ImporterRPM(object):
     def __init__(self):
         self.canceled = False
@@ -538,12 +569,26 @@ class ImporterRPM(object):
             not_synced = verify_download(rpm_info['missing_rpms'], rpm_info['new_rpms'], new_units, verify_options)
             # Save the new units and remove the orphaned units
             saved_new_unit_keys = []
+            save_start_time = time.time()
+#            repodir =   os.path.join(repo.working_dir, repo.id)
+#            temp_path = tempfile.mkdtemp(prefix="temp_pulp_repo")
+#            r = metadata._get_yum_repomd(repodir, temp_path=temp_path)
+#            sack = r.getPackageSack()
+#            sack.populate(r, 'metadata', None, 0)
+            conn = metadata_db.connect("/tmp/%s" % repo.id)
+            sack = None
             for key in new_units:
                 if key not in rpms_with_errors:
-                    u = new_units[key]
+                    u =  new_units[key]
+                    if u.type_id in ["rpm", "srpm"]:
+                        #u = compute_pkg_xml_snippets(sack, u)
+                        u = retrieve_pkg_metadata(conn, u)
                     sync_conduit.save_unit(u)
                     saved_new_unit_keys.append(key)
-
+#            r.close()
+            metadata_db.close_db(conn)
+            save_end_time = time.time()
+            _LOG.info("Total Time to store the units % seconds for %s packages" % (save_end_time-save_start_time, len(new_units)))
             for u in rpm_info['orphaned_rpm_units'].values():
                 try:
                     remove_unit(sync_conduit, repo, u)

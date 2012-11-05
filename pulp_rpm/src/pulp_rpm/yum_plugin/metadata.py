@@ -17,6 +17,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 import threading
 import signal
 import time
@@ -27,6 +28,7 @@ from createrepo import yumbased, GzipFile
 
 from pulp_rpm.yum_plugin import util
 from pulp.common.util import encode_unicode, decode_unicode
+import yum
 
 _LOG = util.getLogger(__name__)
 __yum_lock = threading.Lock()
@@ -349,7 +351,7 @@ def convert_content_to_metadata_type(content_types_list):
     return metadata_type_list
 
 
-def get_package_xml(pkg_path):
+def get_package_xml(pkg_path, ts):
     """
     Method to generate repo xmls - primary, filelists and other
     for a given rpm.
@@ -363,7 +365,7 @@ def get_package_xml(pkg_path):
     if not os.path.exists(pkg_path):
         _LOG.info("Package path %s does not exist" % pkg_path)
         return {}
-    ts = rpmUtils.transaction.initReadOnlyTransaction()
+#    ts = rpmUtils.transaction.initReadOnlyTransaction()
     po = yumbased.CreateRepoPackage(ts, pkg_path)
     # RHEL6 createrepo throws a ValueError if _cachedir is not set
     po._cachedir = None
@@ -372,6 +374,65 @@ def get_package_xml(pkg_path):
                 'other'   : po.xml_dump_other_metadata(),
                }
     return metadata
+
+def _get_yum_repomd(path, temp_path=None):
+    """
+    @param path: path to repo
+    @param temp_path: optional parameter to specify temporary path
+    @return yum.yumRepo.YumRepository object initialized for querying repodata
+    """
+    if not temp_path:
+        temp_path = "/tmp/temp_repo-%s" % (time.time())
+    r = yum.yumRepo.YumRepository(temp_path)
+    try:
+        r.baseurl = "file://%s" % (path.encode("ascii", "ignore"))
+    except UnicodeDecodeError:
+        r.baseurl = "file://%s" % (path)
+    try:
+        r.basecachedir = path.encode("ascii", "ignore")
+    except UnicodeDecodeError:
+        r.basecachedir = path
+    r.baseurlSetup()
+    return r
+
+def get_repo_packages(path):
+    """
+    Get a list of packages in the yum repo.
+    A list of L{Package} data objects are returned so that the repo
+    and associated resources can be closed.
+    @param path: path to repo's base (not the repodatadir, this api
+    expects a path/repodata underneath this path)
+    @return: List of available packages (data) objects in the repo.
+    """
+    temp_path = tempfile.mkdtemp(prefix="temp_pulp_repo")
+    # We want to limit yum operations to 1 per process.
+    # When running with 5 threads calling this function we are seeing a Segmentation Fault
+    # from yum/urlgrabber/libcurl.  Seen on Fedora 14.  yum 3.2.28, libcurl 7.21
+    # https://bugzilla.redhat.com/show_bug.cgi?id=695743
+    # Bug 695743 - Multiple concurrent calls to util.get_repo_packages() results in Segmentation fault
+    __yum_lock.acquire()
+    try:
+        packages = []
+        r = _get_yum_repomd(path, temp_path=temp_path)
+        if not os.path.exists(os.path.join(path, r.repoMDFile)):
+            # check if repomd.xml exists before loading package sack
+            return []
+        sack = r.getPackageSack()
+        sack.populate(r, 'metadata', None, 0)
+#        for p in sack.returnPackages():
+#            packages.append(Package(p))
+        packages = sack.returnNewestByNameArch()
+#        r.close()
+        return packages
+    finally:
+        __yum_lock.release()
+        try:
+            shutil.rmtree(temp_path)
+        except Exception, e:
+            _LOG.warning("Unable to remove temporary directory: %s" % (temp_path))
+            _LOG.warning(e)
+
+
 
 
 class YumMetadataGenerator(object):
