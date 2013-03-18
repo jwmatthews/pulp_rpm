@@ -585,6 +585,7 @@ class ImporterRPM(object):
     def __init__(self):
         self.canceled = False
         self.yumRepoGrinder = None
+        self.save_thread = None
 
     def sync(self, repo, sync_conduit, config, importer_progress_callback=None):
         """
@@ -605,7 +606,7 @@ class ImporterRPM(object):
           @return a tuple of state, dict of sync summary and dict of sync details
           @rtype (bool, {}, {})
         """
-        save_thread = SaveUnitThread(sync_conduit) # save_thread needs to be accessible inside progress_callback()
+        self.save_thread = SaveUnitThread(sync_conduit) # save_thread needs to be accessible inside progress_callback()
 
         def set_progress(type_id, status):
             if importer_progress_callback:
@@ -669,7 +670,7 @@ class ImporterRPM(object):
                         "type": report.item_type, 
                         "relativepath": report.item_relativepath, 
                         "success": report.item_download_success}
-                    save_thread.put_item(saved_item)
+                    self.save_thread.put_item(saved_item)
                     #_LOG.info("Invoked:  save_thread.put_item(%s)" % (saved_item))
                 set_progress("content", status)
 
@@ -733,8 +734,8 @@ class ImporterRPM(object):
         # save_thread needs init() to be called after the yum metadata has been downloaded with yumRepoGrinder.setUp()
         #   further it needs to build a look up table of the initialized units with 'new_units'
         #   expecting yum package metadata to be at repo.working_dir/repo.id
-        save_thread.init(repo.working_dir, repo.id, new_units)
-        save_thread.start()
+        self.save_thread.init(repo.working_dir, repo.id, new_units)
+        self.save_thread.start()
         report = self.yumRepoGrinder.download()
         if self.canceled:
             _LOG.info("Sync of %s has been canceled." % repo.id)
@@ -746,9 +747,9 @@ class ImporterRPM(object):
         # preserve the custom metadata on scratchpad to lookup downloaded data
         preserve_custom_metadata_on_scratchpad(repo, sync_conduit, config)
 
-        save_thread.finish()  # Wait for all packages to be saved
-        not_synced = save_thread.get_errors()
-        saved_units = save_thread.get_saved()
+        self.save_thread.finish()  # Wait for all packages to be saved
+        not_synced = self.save_thread.get_errors()
+        saved_units = self.save_thread.get_saved()
         _LOG.info("SaveThread saved %s units, and reported %s as not_synced" % (len(saved_units), len(not_synced)))
 
         # -------------- removed orphaned items ---------------
@@ -928,4 +929,6 @@ class ImporterRPM(object):
         if self.yumRepoGrinder:
             _LOG.info("Telling grinder to stop syncing")
             self.yumRepoGrinder.stop()
+        if self.save_thread:
+            self.save_thread.finish()
 
