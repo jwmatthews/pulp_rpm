@@ -17,30 +17,47 @@ import os
 import shutil
 import sys
 import tempfile
-import threading
-import time
-import unittest
-from uuid import uuid4
-import importer_mocks
 from glob import glob
+
+from pulp.plugins.model import Repository, Unit
 
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)) + "/../../../plugins/importers/")
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)) + "/../../../plugins/distributors/")
 
-from iso_distributor.distributor import ISODistributor, TYPE_ID_DISTRIBUTOR_EXPORT,\
-    TYPE_ID_RPM, TYPE_ID_SRPM, TYPE_ID_DRPM, TYPE_ID_ERRATA, TYPE_ID_DISTRO, TYPE_ID_PKG_CATEGORY, TYPE_ID_PKG_GROUP
-from iso_distributor.exporter import RepoExporter
-from iso_distributor.generate_iso import GenerateIsos
 from iso_distributor import iso_util
-from yum_importer import importer_rpm
-from yum_importer import errata, distribution
-from pulp.plugins.model import Repository, Unit
-from pulp_rpm.yum_plugin import util, updateinfo
-import distributor_mocks
-import rpm_support_base
+from iso_distributor.distributor import (
+    ISODistributor, TYPE_ID_DISTRIBUTOR_EXPORT, TYPE_ID_RPM, TYPE_ID_SRPM, TYPE_ID_DRPM, TYPE_ID_ERRATA,
+    TYPE_ID_DISTRO, TYPE_ID_PKG_CATEGORY, TYPE_ID_PKG_GROUP)
+from iso_distributor.exporter import RepoExporter
+from pulp_rpm.common import constants
 from pulp_rpm.repo_auth.repo_cert_utils import M2CRYPTO_HAS_CRL_SUPPORT
+from pulp_rpm.yum_plugin import util, updateinfo
+from rpm_support_base import PULP_UNITTEST_REPO_PATH, PULP_UNITTEST_REPO_URL, PulpRPMTests
+from yum_importer import distribution, errata, importer_rpm
+import distributor_mocks
+import importer_mocks
 
-class TestISODistributor(rpm_support_base.PulpRPMTests):
+
+class TestISOUtil(PulpRPMTests):
+    """
+    Test the export distributor's iso_util.py module.
+    """
+    def test_get_http_publish_iso_dir_default(self):
+        """
+        Assert that the default http_publish dir is the same as what is found in constants.py.
+        """
+        http_publish_dir = iso_util.get_http_publish_iso_dir()
+        self.assertEqual(http_publish_dir, constants.EXPORT_HTTP_DIR)
+
+    def test_get_https_publish_iso_dir_default(self):
+        """
+        Assert that the default https_publish dir is the same as what is found in constants.py.
+        """
+        https_publish_dir = iso_util.get_https_publish_iso_dir()
+        self.assertEqual(https_publish_dir, constants.EXPORT_HTTPS_DIR)
+
+
+class TestISODistributor(PulpRPMTests):
 
     def setUp(self):
         super(TestISODistributor, self).setUp()
@@ -59,16 +76,16 @@ class TestISODistributor(rpm_support_base.PulpRPMTests):
         self.distro_dir = os.path.join(self.temp_dir, "distribution")
         os.makedirs(self.distro_dir)
         #publish_dir simulates /var/lib/pulp/published
-        self.http_publish_dir = os.path.join(self.temp_dir, "publish", "http", "isos")
+        self.http_publish_dir = os.path.join(self.temp_dir, "publish", "http", "exports")
         os.makedirs(self.http_publish_dir)
 
-        self.https_publish_dir = os.path.join(self.temp_dir, "publish", "https", "isos")
+        self.https_publish_dir = os.path.join(self.temp_dir, "publish", "https", "exports")
         os.makedirs(self.https_publish_dir)
 
         self.repo_working_dir = os.path.join(self.temp_dir, "repo_working_dir")
         os.makedirs(self.repo_working_dir)
 
-        self.repo_iso_working_dir = os.path.join(self.temp_dir, "repo_working_dir", "isos")
+        self.repo_iso_working_dir = os.path.join(self.temp_dir, "repo_working_dir", "exports")
         os.makedirs(self.repo_iso_working_dir)
 
         self.data_dir = os.path.abspath(os.path.join(os.path.abspath(os.path.dirname(__file__)), "../data"))
@@ -200,13 +217,12 @@ class TestISODistributor(rpm_support_base.PulpRPMTests):
         self.assertTrue("updateinfo" in ftypes)
 
     def test_distribution_exports(self):
-        feed_url = "file://%s/pulp_unittest/" % self.data_dir
         repo = mock.Mock(spec=Repository)
         repo.working_dir = self.repo_working_dir
         repo.id = "pulp_unittest"
         repo.checksumtype = 'sha'
         sync_conduit = importer_mocks.get_sync_conduit(type_id=TYPE_ID_RPM, existing_units=[], pkg_dir=self.pkg_dir)
-        config = importer_mocks.get_basic_config(feed_url=feed_url)
+        config = importer_mocks.get_basic_config(feed_url=PULP_UNITTEST_REPO_URL)
         importerRPM = importer_rpm.ImporterRPM()
         status, summary, details = importerRPM.sync(repo, sync_conduit, config)
         dunit_key = {}
@@ -215,28 +231,28 @@ class TestISODistributor(rpm_support_base.PulpRPMTests):
         dunit_key['arch'] = "x86_64"
         dunit_key['family'] = "TestFamily"
         dunit_key['variant'] = "TestVariant"
-        metadata = { "files" : [{"checksumtype" : "sha256", 	"relativepath" : "images/fileA.txt", 	"fileName" : "fileA.txt",
-                    "downloadurl" : "http://repos.fedorapeople.org/repos/pulp/pulp/demo_repos/pulp_unittest//images/fileA.txt",
+        metadata = { "files" : [{"checksumtype" : "sha256", "relativepath" : "images/fileA.txt", "fileName" : "fileA.txt",
+                    "downloadurl" : os.path.join(PULP_UNITTEST_REPO_PATH, 'images', 'fileA.txt'),
                     "item_type" : "tree_file",
                     "savepath" : "%s/testr1/images" % self.repo_working_dir,
                     "checksum" : "22603a94360ee24b7034c74fa13d70dd122aa8c4be2010fc1361e1e6b0b410ab",
                     "filename" : "fileA.txt",
                     "pkgpath" : "%s/ks-TestFamily-TestVariant-16-x86_64/images" % self.pkg_dir,
                     "size" : 0 },
-                { 	"checksumtype" : "sha256", 	"relativepath" : "images/fileB.txt", 	"fileName" : "fileB.txt",
-                    "downloadurl" : "http://repos.fedorapeople.org/repos/pulp/pulp/demo_repos/pulp_unittest//images/fileB.txt",
+                {"checksumtype" : "sha256", "relativepath" : "images/fileB.txt", "fileName" : "fileB.txt",
+                    "downloadurl" : os.path.join(PULP_UNITTEST_REPO_PATH, 'images', 'fileB.txt'),
                     "item_type" : "tree_file",
                     "savepath" : "%s/testr1/images" % self.repo_working_dir,
                     "checksum" : "8dc89e9883c098443f6616e60a8e489254bf239eeade6e4b4943b7c8c0c345a4",
                     "filename" : "fileB.txt",
-                    "pkgpath" : "%s/ks-TestFamily-TestVariant-16-x86_64/images" % self.pkg_dir, 	"size" : 0 },
-                { 	"checksumtype" : "sha256", 	"relativepath" : "images/fileC.iso", 	"fileName" : "fileC.iso",
-                    "downloadurl" : "http://repos.fedorapeople.org/repos/pulp/pulp/demo_repos/pulp_unittest//images/fileC.iso",
+                    "pkgpath" : "%s/ks-TestFamily-TestVariant-16-x86_64/images" % self.pkg_dir, "size" : 0 },
+                {"checksumtype" : "sha256", "relativepath" : "images/fileC.iso", "fileName" : "fileC.iso",
+                    "downloadurl" : os.path.join(PULP_UNITTEST_REPO_PATH, 'images', 'fileC.iso'),
                     "item_type" : "tree_file",
                     "savepath" : "%s/testr1/images" % self.repo_working_dir,
                     "checksum" : "099f2bafd533e97dcfee778bc24138c40f114323785ac1987a0db66e07086f74",
                     "filename" : "fileC.iso",
-                    "pkgpath" : "%s/ks-TestFamily-TestVariant-16-x86_64/images" % self.pkg_dir, 	"size" : 0 } ],}
+                    "pkgpath" : "%s/ks-TestFamily-TestVariant-16-x86_64/images" % self.pkg_dir, "size" : 0 } ],}
         distro_unit = Unit(distribution.TYPE_ID_DISTRO, dunit_key, metadata, '')
         distro_unit.storage_path = "%s/ks-TestFamily-TestVariant-16-x86_64" % self.pkg_dir
         symlink_dir = "%s/%s" % (self.repo_working_dir, "isos")
@@ -244,20 +260,18 @@ class TestISODistributor(rpm_support_base.PulpRPMTests):
         publish_conduit = distributor_mocks.get_publish_conduit(existing_units=[distro_unit], pkg_dir=self.pkg_dir)
         config = distributor_mocks.get_basic_config(https_publish_dir=self.https_publish_dir, http=False, https=True)
         repo_exporter = RepoExporter(symlink_dir)
-#        status, errors = iso_distributor._export_distributions([distro_unit], symlink_dir)
         status, errors = repo_exporter.export_distributions([distro_unit])
         self.assertTrue(status)
         for file in metadata['files']:
             self.assertTrue(os.path.isfile("%s/%s" % (symlink_dir, file['relativepath'])))
 
     def test_repo_export_isos(self):
-        feed_url = "file://%s/pulp_unittest/" % self.data_dir
         repo = mock.Mock(spec=Repository)
         repo.working_dir = self.repo_working_dir
         repo.id = "pulp_unittest"
         repo.checksumtype = 'sha'
         sync_conduit = importer_mocks.get_sync_conduit(type_id=TYPE_ID_RPM, existing_units=[], pkg_dir=self.pkg_dir)
-        config = importer_mocks.get_basic_config(feed_url=feed_url)
+        config = importer_mocks.get_basic_config(feed_url=PULP_UNITTEST_REPO_URL)
         importerRPM = importer_rpm.ImporterRPM()
         status, summary, details = importerRPM.sync(repo, sync_conduit, config)
         unit_key_a = {'id' : '','name' :'pulp-dot-2.0-test', 'version' :'0.1.2', 'release' : '1.fc11', 'epoch':'0', 'arch' : 'x86_64', 'checksumtype' : 'sha256',
