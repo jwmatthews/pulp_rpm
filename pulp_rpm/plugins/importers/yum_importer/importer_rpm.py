@@ -744,6 +744,8 @@ class ImporterRPM(object):
         return status, summary, details
 
     def process_orphan_items(self, repo, sync_conduit, skip_content_types, rpm_info, drpm_info, distro_info):
+        errors = {}
+        not_synced = []
         removal_errors = []
         # RPMS
         if 'rpm' not in skip_content_types:
