@@ -393,6 +393,7 @@ class SaveUnitThread(threading.Thread):
         self.saved_unit_keys = []
         self.unit_lookup = {}
         self.running = False
+        self.repo_label = ""
 
     def init(self, repo_dir, repo_label, unit_lookup):
         self.repo_dir = repo_dir
@@ -409,7 +410,7 @@ class SaveUnitThread(threading.Thread):
         # This _must_ be init'd in the same thread that will perform the lookups.
         self.yum_pkg_details = metadata.YumPackageDetails(self.repo_dir, self.repo_label)
         if not self.yum_pkg_details.init():
-            _LOG.error("Unable to lookup yum package metadata attributes, failed to initialize YumPackageDetails")
+            _LOG.error("<%s> Unable to lookup yum package metadata attributes, failed to initialize YumPackageDetails" % (self.repo_label))
             self.yum_pkg_details.close()
             self.yum_pkg_details = None
 
@@ -436,10 +437,10 @@ class SaveUnitThread(threading.Thread):
             finally:
                 self.queue_cond.release()
             if counter % 150 == 0:
-                _LOG.info("Waiting for SaveThread to finish: roughly %s items on queue" % (self.download_q.qsize()))
+                _LOG.info("<%s>Waiting for SaveThread to finish: roughly %s items on queue" % (self.repo_label, self.download_q.qsize()))
             time.sleep(.01)
             counter += 1
-        _LOG.info("SaveThread has finished")
+        _LOG.info("<%s> SaveThread has finished" % (self.repo_label))
 
     def get_errors(self):
         return self.error_units
@@ -456,10 +457,10 @@ class SaveUnitThread(threading.Thread):
             self.__run()
         finally:
             self.running = False
-            _LOG.info("SaveThread: Stopped")
+            _LOG.info("<%s> SaveThread: Stopped" % (self.repo_label))
 
     def __run(self):
-        _LOG.info("SaveThread starting")
+        _LOG.info("<%s> SaveThread starting" % (self.repo_label))
         # Note:
         #  All of the interactions with self.yum_package_details must be from the same thread.
         #  This is a sqlite requirement.  The below error is related:
@@ -472,7 +473,7 @@ class SaveUnitThread(threading.Thread):
             except Queue.Empty:
                 # Note this will only happen if we intend to stop this thread 
                 # and 'finish()' signals the condition variable
-                _LOG.info("SaveThread: Queue empty will exit")
+                _LOG.info("<%s> SaveThread: Queue empty will exit" % (self.repo_label))
                 break
             self.process_item(item)
         if self.yum_pkg_details:
@@ -486,24 +487,29 @@ class SaveUnitThread(threading.Thread):
         """
         a = time.time()
         relativepath = item["relativepath"]
+        item_type = item["type"]
         entry = self.lookup_item(relativepath)
         if not entry:
+            _LOG.info("<%s> SaveThread didn't find an entry for '%s' in the lookup table for new units." % (self.repo_label, relativepath))
+            _LOG.info("Will assume this item has already been saved to mongo is just a re-download")
             return # This is likely a missing item being redownloaded, it's already saved in DB
         key = entry["key"]
         unit = entry["unit"]
         if not item["success"]:
+            _LOG.warn("<%s> Error noted downloading: %s with relativepath: %s" % (self.repo_label, key, relativepath))
             self.error_units[key] = unit
             return # don't save this unit, continue processing
         b = time.time()
-        unit = self.expand_metadata(relativepath, unit)
+        if item_type in [BaseFetch.RPM]:
+            unit = self.expand_metadata(relativepath, unit)
         c = time.time()
         if self.save_unit(unit):
             self.saved_unit_keys.append(key)
         d = time.time()
-        if self.download_q.qsize() > 150:
-            _LOG.info("SaveThread Peformance warning: queue size is <%s>" % (self.download_q.qsize()))
-        _LOG.debug("SaveThread<%s on queue>: %s(s) in process_item, %s(s) in expand_metadata, %s(s) seconds in save_unit, saved(%s)" \
-            % (self.download_q.qsize(), d-a, c-b, d-c, unit.unit_key))
+        if self.download_q.qsize() > 500:
+            _LOG.info("<%s> SaveThread Peformance warning: queue size is <%s>" % (self.repo_label, self.download_q.qsize()))
+        _LOG.debug("<%s> SaveThread<%s on queue>: %s(s) in process_item, %s(s) in expand_metadata, %s(s) seconds in save_unit, saved(%s)" \
+            % (self.repo_label, self.download_q.qsize(), d-a, c-b, d-c, unit.unit_key))
 
     def put_item(self, item):
         """
@@ -577,7 +583,7 @@ class SaveUnitThread(threading.Thread):
                     del u.metadata["changelog"]
             return True
         except Exception, e:
-            _LOG.exception("Unable to save unit: %s" % (u))
+            _LOG.exception("<%s> Unable to save unit: %s" % (self.repo_label, u))
             return False
 
 
