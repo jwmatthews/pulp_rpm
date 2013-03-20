@@ -24,7 +24,7 @@ from pulp.server.db.model.criteria import UnitAssociationCriteria
 from pulp_rpm.yum_plugin import util, metadata
 from yum_importer import distribution, drpm
 import pulp_rpm.common.constants as constants
-from pulp_rpm.common.ids import TYPE_ID_DRPM
+from pulp_rpm.common.ids import TYPE_ID_DRPM, TYPE_ID_DISTRO
 
 _LOG = util.getLogger(__name__)
 
@@ -345,6 +345,10 @@ class SaveUnitThread(threading.Thread):
     """
     Will handle looking up yum repo metadata on RPMs and save the unit to the sync_conduit.
     Does the work in parallel with downloading to increase performance.
+    Saves units of: rpm, srpm, drpm
+    Note:
+        distribution units will pass through this from the Grinder callbacks yet will not be saved.
+        a separate method in ImporterRPM will process distribution saves.
     """
     def __init__(self, sync_conduit):
         threading.Thread.__init__(self)
@@ -369,6 +373,8 @@ class SaveUnitThread(threading.Thread):
             if u.metadata.has_key("relativepath"):
                 entry = {"key": key, "unit": u}
                 self.unit_lookup[u.metadata["relativepath"]] = entry
+            elif u.type_id not in (TYPE_ID_DISTRO):
+                _LOG.warning("Unable to find 'relativepath' for %s" % (u))
 
     def __init_yum_package_details(self):
         # This _must_ be init'd in the same thread that will perform the lookups.
@@ -720,6 +726,8 @@ class ImporterRPM(object):
         not_synced = self.save_thread.get_errors()
         saved_units = self.save_thread.get_saved()
         _LOG.info("SaveThread saved %s units, and reported %s as not_synced" % (len(saved_units), len(not_synced)))
+     
+        self.process_distributions(sync_conduit, distro_info["new_distro_units"])
 
         # -------------- removed orphaned items ---------------
         removal_errors = self.process_orphan_items(repo, sync_conduit, skip_content_types, rpm_info, drpm_info, distro_info)
@@ -743,6 +751,30 @@ class ImporterRPM(object):
         _LOG.info("STATUS: %s; SUMMARY: %s; DETAILS: %s" % (status, summary, details))
         return status, summary, details
 
+    def process_distributions(self, sync_conduit, new_distro_units):
+        # Distributions need to be saved a little different
+        #  A DistributionUnit represents a collection.  A collection of distribution files
+        #  As we are downloading each file we receive a callback when they succeed...yet we have nothing to update in the database at that point in time.
+        #  Our model is at the level of the entire Distribution, not at individual files making up that collection.
+        #
+        #  This means that the SaveThread will not be updating anything or Distributions.  The individual files will still be transfered by Grinder
+        #  and written to the file system...the update of the DB is the missing piece we need to address here.
+        #
+        errors = {}
+        for key, unit in new_distro_units.items():
+            valid = True # If all the files are present we assume Distribution is good and we save it.
+            for ksfile in unit.metadata["files"]:
+                ks_file_path = os.path.join(unit.storage_path, ksfile["relativepath"])
+                if not os.path.exists(ks_file_path):
+                    _LOG.info("Unable to save Distribution<%s> because one of it's distribution files: '%s' is missing" % (unit, ks_file_path))
+                    valid = False
+                    break
+            if valid:
+                sync_conduit.save_unit(unit)
+            else:
+                errors[key] = unit
+        return errors
+ 
     def process_orphan_items(self, repo, sync_conduit, skip_content_types, rpm_info, drpm_info, distro_info):
         errors = {}
         not_synced = []
