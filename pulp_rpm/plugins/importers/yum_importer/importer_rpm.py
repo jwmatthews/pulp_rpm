@@ -150,7 +150,6 @@ def form_rpm_unit_key(rpm):
 
 def form_rpm_metadata(rpm):
     metadata = {}
-    #for key in ("filename", "vendor", "description", "buildhost", "license", "vendor", "requires", "provides", "relativepath", "changelog", "filelist", "files", "repodata"):
     for key in ("filename", "relativepath"):
         metadata[key] = rpm[key]
     return metadata
@@ -178,40 +177,6 @@ def form_report(report):
     ret_val["size_total"] = report.last_progress.size_total
     ret_val["size_left"] = report.last_progress.size_left
     return ret_val
-
-def verify_download(missing_rpms, new_rpms, new_units, verify_options={}):
-    """
-    Will verify that intended items have been downloaded.
-    Items not downloaded will be removed from passed in dicts
-
-    @param missing_rpms dict of rpms determined to be missing from repo prior to sync
-    @type missing_rpms {}
-
-    @param new_rpms dict of rpms determined to be new to repo prior to sync
-    @type new_rpms {}
-
-    @param new_units
-    @type new_units {key:pulp.server.content.plugins.model.Unit}
-
-    @return dict of rpms which have not been downloaded
-    @rtype {}
-    """
-    not_synced = {}
-    for key in new_rpms.keys():
-        rpm = new_rpms[key]
-        rpm_path = os.path.join(rpm["pkgpath"], rpm["filename"])
-        if not util.verify_exists(rpm_path, rpm['checksum'], rpm['checksumtype'], rpm['size'], verify_options):
-            not_synced[key] = rpm
-            del new_rpms[key]
-    for key in missing_rpms.keys():
-        rpm = missing_rpms[key]
-        rpm_path = os.path.join(rpm["pkgpath"], rpm["filename"])
-        if not util.verify_exists(rpm_path, rpm['checksum'], rpm['checksumtype'], rpm['size'], verify_options):
-            not_synced[key] = rpm
-            del missing_rpms[key]
-    for key in not_synced:
-        del new_units[key]
-    return not_synced
 
 def force_ascii(value):
     retval = value
@@ -269,7 +234,6 @@ def get_yumRepoGrinder(repo_id, repo_working_dir, config):
         remove_old=remove_old, numOldPackages=num_old_packages, skip=skip, max_speed=max_speed,\
         purge_orphaned=purge_orphaned, distro_location=constants.DISTRIBUTION_STORAGE_PATH, tmp_path=repo_working_dir)
     return yumRepoGrinder
-
 
 def _search_for_error(rpm_dict):
     errors = {}
@@ -389,7 +353,7 @@ class SaveUnitThread(threading.Thread):
         self.queue_cond = threading.Condition()
         self.download_q = Queue.Queue()
         self.yum_pkg_details = None
-        self.error_units = {}
+        self.error_units = []
         self.saved_unit_keys = []
         self.unit_lookup = {}
         self.running = False
@@ -491,23 +455,23 @@ class SaveUnitThread(threading.Thread):
         entry = self.lookup_item(relativepath)
         if not entry:
             _LOG.info("<%s> SaveThread didn't find an entry for '%s' in the lookup table for new units." % (self.repo_label, relativepath))
-            _LOG.info("Will assume this item has already been saved to mongo is just a re-download")
-            return # This is likely a missing item being redownloaded, it's already saved in DB
+            _LOG.info("Will assume this item was a 'missing' item being re-fetched, therefore has already been saved in mongo.")
+            return 
         key = entry["key"]
         unit = entry["unit"]
         if not item["success"]:
             _LOG.warn("<%s> Error noted downloading: %s with relativepath: %s" % (self.repo_label, key, relativepath))
-            self.error_units[key] = unit
+            self.error_units.append(unit)
             return # don't save this unit, continue processing
         b = time.time()
-        if item_type in [BaseFetch.RPM]:
+        if item_type in [BaseFetch.RPM]: #Covers rpm & srpm
             unit = self.expand_metadata(relativepath, unit)
         c = time.time()
         if self.save_unit(unit):
             self.saved_unit_keys.append(key)
+        else:
+            self.error_units.append(unit)
         d = time.time()
-        if self.download_q.qsize() > 500:
-            _LOG.info("<%s> SaveThread Peformance warning: queue size is <%s>" % (self.repo_label, self.download_q.qsize()))
         _LOG.debug("<%s> SaveThread<%s on queue>: %s(s) in process_item, %s(s) in expand_metadata, %s(s) seconds in save_unit, saved(%s)" \
             % (self.repo_label, self.download_q.qsize(), d-a, c-b, d-c, unit.unit_key))
 
@@ -677,7 +641,6 @@ class ImporterRPM(object):
                         "relativepath": report.item_relativepath, 
                         "success": report.item_download_success}
                     self.save_thread.put_item(saved_item)
-                    #_LOG.info("Invoked:  save_thread.put_item(%s)" % (saved_item))
                 set_progress("content", status)
 
         ####
@@ -771,7 +734,7 @@ class ImporterRPM(object):
         details["size_total"] = report.last_progress.size_total
         details["time_metadata_sec"] = end_metadata - start_metadata
         details["time_download_sec"] = end_download - start_download
-        details["not_synced"] = not_synced
+        details["not_synced"] = [x.unit_key for x in not_synced]
         details["sync_report"] = form_report(report)
 
         status = True
@@ -810,6 +773,7 @@ class ImporterRPM(object):
             all_new_distro_files, all_missing_distro_files):        
         # We are removing the older approach of using filter to create a new list and then checking the length
         # Instead we will use reduce and compute the length without requiring extra memory for an additional new list
+        _LOG.info("not_synced = %s" % (not_synced))
         if not_synced:
             _LOG.warning("%s items were not downloaded" % (len(not_synced)))
         summary = {}
@@ -823,7 +787,7 @@ class ImporterRPM(object):
             summary["num_rpms"] = len(rpm_info['available_rpms'])
             summary["num_synced_new_rpms"] =  reduce(check_rpm, rpm_info['new_rpm_units'].values(), 0)
             summary["num_resynced_rpms"] = reduce(check_rpm, rpm_info['missing_rpm_units'].values(), 0)
-            summary["num_not_synced_rpms"] = reduce(check_rpm, not_synced.values(), 0)
+            summary["num_not_synced_rpms"] = reduce(check_rpm, not_synced, 0)
             summary["num_orphaned_rpms"] = reduce(check_rpm, rpm_info['orphaned_rpm_units'].values(), 0)
 
             def check_srpm(accum, u):
@@ -832,7 +796,7 @@ class ImporterRPM(object):
                 return accum
             summary["num_synced_new_srpms"] = reduce(check_srpm, rpm_info['new_rpm_units'].values(), 0)
             summary["num_resynced_srpms"] = reduce(check_srpm, rpm_info['missing_rpm_units'].values(), 0)
-            summary["num_not_synced_srpms"] = reduce(check_srpm, not_synced.values(), 0)
+            summary["num_not_synced_srpms"] = reduce(check_srpm, not_synced, 0)
             summary["num_orphaned_srpms"] = reduce(check_srpm, rpm_info['orphaned_rpm_units'].values(), 0)
   
         if 'drpm' not in skip_content_types:
@@ -843,7 +807,7 @@ class ImporterRPM(object):
             summary["num_synced_new_drpms"] = len(drpm_info['new_drpm_units']) 
             summary["num_resynced_drpms"] = len(drpm_info['missing_drpm_units'])
             summary["num_orphaned_drpms"] = len(drpm_info['orphaned_drpm_units'])
-            summary["num_not_synced_drpms"] = reduce(check_drpm, not_synced.values(), 0)
+            summary["num_not_synced_drpms"] = reduce(check_drpm, not_synced, 0)
 
         if 'distribution' not in skip_content_types:
             summary["num_synced_new_distributions"] = len(distro_info['new_distro_units'])
