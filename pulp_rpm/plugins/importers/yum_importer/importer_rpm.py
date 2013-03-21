@@ -460,8 +460,9 @@ class SaveUnitThread(threading.Thread):
         item_type = item["type"]
         entry = self.lookup_item(relativepath)
         if not entry:
-            _LOG.info("<%s> SaveThread didn't find an entry for '%s' in the lookup table for new units." % (self.repo_label, relativepath))
-            _LOG.info("Will assume this item was a 'missing' item being re-fetched, therefore has already been saved in mongo.")
+            if item_type not in [BaseFetch.TREE_FILE]:
+                _LOG.info("<%s> SaveThread didn't find an entry for '%s' in the lookup table for new units." % (self.repo_label, relativepath))
+                _LOG.info("Will assume this item was a 'missing' item being re-fetched, therefore has already been saved in mongo.")
             return 
         key = entry["key"]
         unit = entry["unit"]
