@@ -18,7 +18,7 @@
 
 Name: pulp-rpm
 Version: 2.1.0
-Release: 0.23.beta
+Release: 0.25.beta
 Summary: Support for RPM content in the Pulp platform
 Group: Development/Languages
 License: GPLv2
@@ -61,6 +61,7 @@ popd
 mkdir -p /srv
 mkdir -p %{buildroot}/%{_sysconfdir}/pulp
 mkdir -p %{buildroot}/%{_sysconfdir}/pki/pulp/content
+mkdir -p %{buildroot}/%{_sysconfdir}/yum.repos.d
 mkdir -p %{buildroot}/%{_usr}/lib
 mkdir -p %{buildroot}/%{_usr}/lib/pulp/plugins
 mkdir -p %{buildroot}/%{_usr}/lib/pulp/admin/extensions
@@ -94,6 +95,9 @@ cp -R pulp_rpm/plugins/* %{buildroot}/%{_usr}/lib/pulp/plugins
 
 # Yum (plugins)
 cp -R pulp_rpm/usr/lib/yum-plugins %{buildroot}/%{_usr}/lib
+
+# Ghost
+touch %{buildroot}/%{_sysconfdir}/yum.repos.d/pulp.repo
 
 %clean
 rm -rf %{buildroot}
@@ -133,6 +137,7 @@ A collection of modules shared among all RPM components.
 Summary: The RPM extension common library
 Group: Development/Languages
 Requires: python-pulp-rpm-common = %{pulp_version}
+Requires: rpm-python
 
 %description -n python-pulp-rpm-extension
 A collection of components shared among RPM extensions.
@@ -241,6 +246,7 @@ management and Linux specific commands such as system reboot.
 %{_sysconfdir}/pulp/agent/conf.d/bind.conf
 %{_sysconfdir}/pulp/agent/conf.d/linux.conf
 %{_sysconfdir}/pulp/agent/conf.d/rpm.conf
+%ghost %{_sysconfdir}/yum.repos.d/pulp.repo
 %{_usr}/lib/pulp/agent/handlers/bind.py*
 %{_usr}/lib/pulp/agent/handlers/linux.py*
 %{_usr}/lib/pulp/agent/handlers/rpm.py*
@@ -267,6 +273,28 @@ A collection of yum plugins supplementing Pulp consumer operations.
 
 
 %changelog
+* Thu Mar 21 2013 Jeff Ortel <jortel@redhat.com> 2.1.0-0.25.beta
+- 
+
+* Thu Mar 21 2013 Jeff Ortel <jortel@redhat.com> 2.1.0-0.24.beta
+- 923448 - made the changelog and filelist metadata migration more robust in
+  terms of handling non-utf8 text encoding (mhrivnak@redhat.com)
+- 923351 - updating errata profiler applicability function to add errata
+  details to the applicability report (skarmark@redhat.com)
+- 923794 - The error report coming out of the yum importer can't be serialized
+  to the database (jwmatthews@gmail.com)
+- 923792 - Errata queries during sync don't properly limit returned data
+  (jwmatthews@gmail.com)
+- 920322 - Use import_units() inside of _import_pkg_category_unit() to ensure
+  that we handle package groups correctly. (rbarlow@redhat.com)
+- 919519 - Adjust documentation to reflect new export publishing location.
+  (rbarlow@redhat.com)
+- 919519 - The export distributor now published to /pulp/exports instead of
+  /pulp/isos. (rbarlow@redhat.com)
+- 912836 - Fix disconnect between rpm repo extension and repolib with regard to
+  GPG.keys. (jortel@redhat.com)
+- 917083 - ghost pulp.repo so it's cleaned up on uninstall. (jortel@redhat.com)
+
 * Thu Mar 14 2013 Jeff Ortel <jortel@redhat.com> 2.1.0-0.23.beta
 - 
 
